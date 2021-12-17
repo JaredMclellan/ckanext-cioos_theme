@@ -4,7 +4,8 @@ import ckan.plugins as plugins
 import ckan.plugins.toolkit as toolkit
 import ckan.model as model
 import ckanext.cioos_theme.helpers as cioos_helpers
-import ckanext.cioos_theme.package_relationships as pr
+import ckanext.cioos_theme.cli as cli
+import ckanext.cioos_theme.util.package_relationships as pr
 from ckanext.scheming.validation import scheming_validator
 from ckan.logic import NotFound
 from ckan.lib.plugins import DefaultTranslation
@@ -169,13 +170,13 @@ def cioos_is_valid_range(field, schema):
     return validator
 
 
-def render_schemamap(self):
+def render_schemamap():
     return toolkit.render('schemamap.html')
 
-def render_datacite_xml(self, id):
+def render_datacite_xml(id, format):
     context = {'model': model, 'session': model.Session,
-               'user': c.user, 'for_view': True,
-               'auth_user_obj': c.userobj}
+               'user': g.user, 'for_view': True,
+               'auth_user_obj': g.userobj}
     data_dict = {'id': id}
 
     try:
@@ -183,7 +184,7 @@ def render_datacite_xml(self, id):
     except toolkit.ObjectNotFound:
         toolkit.abort(404, _('Dataset not found'))
     except toolkit.NotAuthorized:
-        toolkit.abort(403, _('User %r not authorized to view datacite xml for %s') % (c.user, id))
+        toolkit.abort(403, _('User %r not authorized to view datacite xml for %s') % (g.user, id))
 
     pkg = toolkit.get_action('package_show')(data_dict={'id': id})
     return toolkit.render('package/datacite.html', extra_vars={'pkg_dict': pkg})
@@ -196,14 +197,19 @@ class Cioos_ThemePlugin(plugins.SingletonPlugin, DefaultTranslation):
     plugins.implements(plugins.IPackageController, inherit=True)
     plugins.implements(plugins.IValidators)
     plugins.implements(plugins.IAuthenticator)
+    plugins.implements(plugins.IClick)
     plugins.implements(plugins.IBlueprint)
 
-    #IBlueprint
+    # IClick
+    def get_commands(self):
+        return cli.get_commands()
+
+    # IBlueprint
     def get_blueprint(self):
-        blueprint = Blueprint('foo', self.__module__)
+        blueprint = Blueprint('cioos', self.__module__)
         rules = [
             ('/schemamap', 'schemamap', render_schemamap),
-            ('/dataset/{id}.{format}', 'datacite_xml', render_datacite_xml),
+            ('/dataset/<id>.<format>', 'datacite_xml', render_datacite_xml),
         ]
         for rule in rules:
             blueprint.add_url_rule(*rule)
@@ -281,7 +287,7 @@ class Cioos_ThemePlugin(plugins.SingletonPlugin, DefaultTranslation):
         return schema
 
     def get_additional_css_path(self):
-        return toolkit.config.get('ckan.cioos.ra_css_path', '/ra.css')
+        return toolkit.config.get('ckan.cioos.ra_css_path')
 
     def get_helpers(self):
         """Register the most_popular_groups() function above as a template helper function."""
@@ -426,8 +432,8 @@ class Cioos_ThemePlugin(plugins.SingletonPlugin, DefaultTranslation):
             else:
                 resp_orgs = [force_responsible_organization]
         else:
-            resp_org_roles = json.loads(toolkit.config.get('ckan.responsible_organization_roles', '["owner", "originator", "custodian", "author", "principalInvestigator"]'))
-            resp_orgs = [x.get('organisation-name', '').strip() for x in load_json(parties) if x.get('role') in resp_org_roles]
+            resp_org_roles = cioos_helpers.load_json(toolkit.config.get('ckan.responsible_organization_roles', '["owner", "originator", "custodian", "author", "principalInvestigator"]'))
+            resp_orgs = [x.get('organisation-name', '').strip() for x in cioos_helpers.load_json(parties) if x.get('role') in resp_org_roles]
             resp_orgs = list(dict.fromkeys(resp_orgs))  # remove duplicates
             resp_orgs = list(filter(None, resp_orgs))  # remove empty elements (in a python 2 and 3 friendly way)
         return resp_orgs
@@ -574,7 +580,7 @@ class Cioos_ThemePlugin(plugins.SingletonPlugin, DefaultTranslation):
                 result['title_translated'] = cioos_helpers.load_json(title)
             notes = result.get('notes_translated')
             if(notes):
-                result['notes_translated'] = load_json(notes)
+                result['notes_translated'] = cioos_helpers.load_json(notes)
 
             # convert the rest of the strings to json
             for field in [
@@ -590,7 +596,7 @@ class Cioos_ThemePlugin(plugins.SingletonPlugin, DefaultTranslation):
                     "cited-responsible-party"]:
                 tmp = result.get(field)
                 if tmp:
-                    result[field] = load_json(tmp)
+                    result[field] = cioos_helpers.load_json(tmp)
 
 
             # update organization object while we are at it
@@ -660,10 +666,10 @@ class Cioos_ThemePlugin(plugins.SingletonPlugin, DefaultTranslation):
         result = package_dict
         title = result.get('title_translated')
         if(title):
-            result['title_translated'] = load_json(title)
+            result['title_translated'] = cioos_helpers.load_json(title)
         notes = result.get('notes_translated')
         if(notes):
-            result['notes_translated'] = load_json(notes)
+            result['notes_translated'] = cioos_helpers.load_json(notes)
 
         # convert the rest of the strings to json
         for field in [
@@ -679,7 +685,7 @@ class Cioos_ThemePlugin(plugins.SingletonPlugin, DefaultTranslation):
                 "cited-responsible-party"]:
             tmp = result.get(field)
             if tmp:
-                result[field] = load_json(tmp)
+                result[field] = cioos_helpers.load_json(tmp)
         package_dict = result
 
 
