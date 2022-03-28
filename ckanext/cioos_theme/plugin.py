@@ -23,17 +23,14 @@ import ckan.lib.base as base
 import re
 import time
 
-
-
 Invalid = df.Invalid
-
-log = logging.getLogger(__name__)
 
 # import debugpy
 
 StopOnError = df.StopOnError
 missing = df.missing
 log = logging.getLogger(__name__)
+log_auth = logging.getLogger(__name__ + '.auth')
 
 # debugpy.listen(('0.0.0.0', 5678))
 # log.debug("Waiting for debugger attach")
@@ -224,7 +221,7 @@ class Cioos_ThemePlugin(plugins.SingletonPlugin, DefaultTranslation):
         except KeyError:
             remote_addr = toolkit.request.remote_addr
 
-        log.info('Request by %s for %s from %s', toolkit.request.remote_user, toolkit.request.url, remote_addr)
+        log_auth.info('Request by %s for %s from %s', toolkit.request.remote_user, toolkit.request.url, remote_addr)
         g.user = None
         g.userobj = None
         return
@@ -234,7 +231,7 @@ class Cioos_ThemePlugin(plugins.SingletonPlugin, DefaultTranslation):
             remote_addr = toolkit.request.headers['X-Forwarded-For']
         except KeyError:
             remote_addr = toolkit.request.remote_addr
-        log.info('Login attempt from %s', remote_addr)
+        log_auth.info('Login attempt from %s', remote_addr)
         return
 
     def logout(self):
@@ -242,7 +239,7 @@ class Cioos_ThemePlugin(plugins.SingletonPlugin, DefaultTranslation):
             remote_addr = toolkit.request.headers['X-Forwarded-For']
         except KeyError:
             remote_addr = toolkit.request.remote_addr
-        log.info('Logout by %s from %s', toolkit.request.remote_user, remote_addr)
+        log_auth.info('Logout by %s from %s', toolkit.request.remote_user, remote_addr)
         return
 
     def abort(self, status_code, detail, headers, comment):
@@ -251,7 +248,7 @@ class Cioos_ThemePlugin(plugins.SingletonPlugin, DefaultTranslation):
             remote_addr = toolkit.request.headers['X-Forwarded-For']
         except KeyError:
             remote_addr = toolkit.request.remote_addr
-        log.info('Blocked request to %s with status %s becouse "%s" from %s', toolkit.request.url, status_code, detail, remote_addr)
+        log_auth.info('Blocked request to %s with status %s becouse "%s" from %s', toolkit.request.url, status_code, detail, remote_addr)
         return (status_code, detail, headers, comment)
 
     # IConfigurer
@@ -260,6 +257,7 @@ class Cioos_ThemePlugin(plugins.SingletonPlugin, DefaultTranslation):
         toolkit.add_template_directory(config_, 'templates')
         toolkit.add_public_directory(config_, 'public')
         toolkit.add_resource('fanstatic', 'cioos_theme')
+        toolkit.add_resource('public', 'ckanext-cioos_theme')
 
     def update_config_schema(self, schema):
 
@@ -321,7 +319,8 @@ class Cioos_ThemePlugin(plugins.SingletonPlugin, DefaultTranslation):
             'cioos_get_doi_authority_url': cioos_helpers.get_doi_authority_url,
             'cioos_get_doi_prefix': cioos_helpers.get_doi_prefix,
             'cioos_get_datacite_org': cioos_helpers.get_datacite_org,
-            'cioos_get_datacite_test_mode': cioos_helpers.get_datacite_test_mode
+            'cioos_get_datacite_test_mode': cioos_helpers.get_datacite_test_mode,
+            'cioos_helper_available': cioos_helpers.helper_available
         }
 
     def get_validators(self):
@@ -396,6 +395,14 @@ class Cioos_ThemePlugin(plugins.SingletonPlugin, DefaultTranslation):
         :return:
         """
 
+        # populate search_extras global if any were used
+        search_extras = {}
+        for (param, value) in toolkit.request.params.items():
+            if param not in ['q', 'page', 'sort'] \
+                    and len(value) and param.startswith('ext_'):
+                search_extras[param] = value
+        toolkit.c.search_extras = search_extras
+
         # remove groups facet
         if 'groups' in facets_dict:
             facets_dict.pop('groups')
@@ -433,9 +440,10 @@ class Cioos_ThemePlugin(plugins.SingletonPlugin, DefaultTranslation):
                 resp_orgs = [force_responsible_organization]
         else:
             resp_org_roles = cioos_helpers.load_json(toolkit.config.get('ckan.responsible_organization_roles', '["owner", "originator", "custodian", "author", "principalInvestigator"]'))
-            resp_orgs = [x.get('organisation-name', '').strip() for x in cioos_helpers.load_json(parties) if x.get('role') in resp_org_roles]
+            resp_orgs = [x.get('organisation-name', '').strip() for x in cioos_helpers.load_json(parties) if not set(cioos_helpers.load_json(x.get('role'))).isdisjoint(resp_org_roles)]
             resp_orgs = list(dict.fromkeys(resp_orgs))  # remove duplicates
             resp_orgs = list(filter(None, resp_orgs))  # remove empty elements (in a python 2 and 3 friendly way)
+
         return resp_orgs
 
     def _get_extra_value(self, key, package_dict):
@@ -507,8 +515,9 @@ class Cioos_ThemePlugin(plugins.SingletonPlugin, DefaultTranslation):
                 data_dict['temporal-extent-begin'] = temporal_extent_begin
             if(temporal_extent_end):
                 data_dict['temporal-extent-end'] = temporal_extent_end
-            if(temporal_extent_begin and temporal_extent_end):
-                data_dict['temporal-extent-range'] = '[' + temporal_extent_begin + ' TO ' + temporal_extent_end + ']'
+            # If end is not set then we will still include these dataset in temporal searches by giving them an end time of 'NOW'
+            if(temporal_extent_begin):
+                data_dict['temporal-extent-range'] = '[' + temporal_extent_begin + ' TO ' + (temporal_extent_end or '*') + ']'
 
         # create vertical extent index
         ve = data_dict.get('vertical-extent', '{}')
@@ -536,7 +545,7 @@ class Cioos_ThemePlugin(plugins.SingletonPlugin, DefaultTranslation):
         dict_out = {}
 
         for d in dict_list:
-            group_value = d['individual-name'] or d['organisation-name']
+            group_value = d.get('individual-name') or d.get('organisation-name')
             if not dict_out.get(group_value):
                 dict_out[group_value] = defaultdict(list)
             for key, value in d.items():
@@ -545,7 +554,7 @@ class Cioos_ThemePlugin(plugins.SingletonPlugin, DefaultTranslation):
                 else:
                     dict_out[group_value][key].append(value)
         for d in dict_list:
-            group_value = d['individual-name'] or d['organisation-name']
+            group_value = d.get('individual-name') or d.get('organisation-name')
             dict_out[group_value] = dict(dict_out[group_value])
 
         for k1, v1 in dict_out.items():
@@ -555,6 +564,29 @@ class Cioos_ThemePlugin(plugins.SingletonPlugin, DefaultTranslation):
                     v1[k] = v1[k][0]
             out.append(v1)
         return out
+
+    # handle custom temporal range search facet
+    def before_search(self, search_params):
+
+        if '-dataset_type:harvest' not in search_params.get('fq', {}):
+            return search_params
+
+        begin = search_params.get('extras', {}).get('ext_year_begin', '*')
+        end = search_params.get('extras', {}).get('ext_year_end', '*')
+        if begin == end == '*':
+            return search_params
+
+        search_params['fq_list'] = search_params.get('fq_list', [])
+
+        show_null_range = search_params.get('extras', {}).get('ext_show_empty_range', 'false')
+
+        if show_null_range == 'true':
+            search_params['fq_list'].append('+(temporal-extent-range:[{begin} TO {end}] OR (*:* NOT temporal-extent-range:[* TO *]))'
+                                            .format(begin=begin, end=end))
+        else:
+            search_params['fq_list'].append('+temporal-extent-range:[{begin} TO {end}]'
+                                            .format(begin=begin, end=end))
+        return search_params
 
     # update eov search facets with keys from choices list in the scheming extension schema
     # format search results for consistant json output
