@@ -53,3 +53,6 @@ ckanext/cioos_theme/public/sass/.sass-cache/
 ckanext/cioos_theme/public/base/.DS_Store
 
 .DS_Store
+
+#VS code config
+.vscode
